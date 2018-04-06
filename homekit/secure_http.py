@@ -18,6 +18,8 @@ import fcntl
 import os
 import io
 import http.client
+import queue
+import threading
 
 from homekit.chacha20poly1305 import chacha20_aead_encrypt, chacha20_aead_decrypt
 
@@ -27,6 +29,7 @@ class SecureHttp:
     Class to helf in the handling of HTTP requests and responses that are performed following chapter 5.5 page 70ff of
     the HAP specification.
     """
+    response_queue = queue.Queue()
 
     class Wrapper:
         def __init__(self, data):
@@ -56,6 +59,9 @@ class SecureHttp:
         self.c2a_key = c2a_key
         self.c2a_counter = 0
         self.a2c_counter = 0
+
+        t = threading.Thread(target=self.receive_loop)
+        t.start()
 
     def get(self, target):
         data = 'GET {tgt} HTTP/1.1\n\n'.format(tgt=target)
@@ -98,7 +104,28 @@ class SecureHttp:
         tmp[1] = tmp[1][length + 2:]
         return chunk + SecureHttp._parse(tmp[1])
 
-    def _handle_response(self):
+    def handle_event(self, event):
+        print(event)
+
+    def receive_loop(self):
+        while True:
+            result = self._receive()
+
+            if result.startswith(b'EVENT/1.0'):
+                self.handle_event(result)
+            elif result.startswith(b'HTTP/1.1'):
+                r = http.client.HTTPResponse(SecureHttp.Wrapper(result))
+                r.begin()
+            #
+            #   I expected a full http response but the first real homekit accessory (Koogeek-P1) just replies with body
+            #   in chunked mode...
+            #
+            else:
+                data = SecureHttp._parse(result)
+                r = self.HTTPResponseWrapper(data)
+            self.response_queue.put(r)
+
+    def _receive(self):
         # following the information from page 71 about HTTP Message splitting:
         # The blocks start with 2 byte little endian defining the length of the encrypted data (max 1024 bytes)
         # followed by 16 byte authTag
@@ -157,14 +184,7 @@ class SecureHttp:
                 result += tmp
             self.a2c_counter += 1
 
-        #
-        #   I expected a full http response but the first real homekit accessory (Koogeek-P1) just replies with body
-        #   in chunked mode...
-        #
-        if result.startswith(b'HTTP/1.1'):
-            r = http.client.HTTPResponse(SecureHttp.Wrapper(result))
-            r.begin()
-            return r
-        else:
-            data = SecureHttp._parse(result)
-            return self.HTTPResponseWrapper(data)
+        return result
+
+    def _handle_response(self):
+        return self.response_queue.get()
