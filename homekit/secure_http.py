@@ -104,9 +104,12 @@ class SecureHttp:
         # followed by 16 byte authTag
         blocks = []
         tmp = bytearray()
-        exp_len = 512
-        while True:
-            data = self.sock.recv(exp_len)
+        next_exp_len = None
+        while next_exp_len is None or next_exp_len > 0:
+            exp_len = next_exp_len
+            next_exp_len = None
+
+            data = self.sock.recv(exp_len if exp_len else 512)
             tmp += data
             length = int.from_bytes(tmp[0:2], 'little')
             if length + 18 > len(tmp):
@@ -125,10 +128,23 @@ class SecureHttp:
 
             # check how long next block will be
             if int.from_bytes(tmp[0:2], 'little') < 1024:
-                exp_len = int.from_bytes(tmp[0:2], 'little') - len(tmp) + 18
+                next_exp_len = int.from_bytes(tmp[0:2], 'little') - len(tmp) + 18
 
-            if length < 1024:
+            if exp_len is not None and len(data) <= exp_len:
                 break
+
+        if len(tmp) > 0:
+            length = int.from_bytes(tmp[0:2], 'little')
+            tmp = tmp[2:]
+
+            block = tmp[0:length]
+            tmp = tmp[length:]
+
+            tag = tmp[0:16]
+            tmp = tmp[16:]
+
+            blocks.append((length, block, tag))
+
 
         # now decrypt the blocks and assemble the answer to our request
         result = bytearray()
